@@ -14,6 +14,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
+      <title>Atnaujinimai ir pakeitimai</title>
       <body className={poppins.className}>{children}</body>
     </html>
   );
