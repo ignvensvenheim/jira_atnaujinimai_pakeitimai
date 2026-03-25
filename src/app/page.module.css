@@ -22,7 +22,6 @@
   gap: 2px;
 }
 
-/* FIX: was accidentally duplicated as header__right before */
 .header__title {
   font-size: 16px;
   font-weight: 600;
@@ -47,7 +46,6 @@
   min-height: 100vh;
   padding: 18px;
   color: var(--color-primary);
-
   background-image: url("/bg2.jpg");
   background-size: 500px;
   background-position: center;
@@ -78,20 +76,45 @@
   flex-wrap: wrap;
 }
 
+.dashboard__searchWrap {
+  position: relative;
+  min-width: 320px;
+  flex: 1 1 320px;
+}
+
 .dashboard__search {
   padding: 10px;
   border: 1px solid var(--border-color);
   border-radius: var(--border-radius);
-  min-width: 320px;
-  flex: 1 1 320px;
+  width: 100%;
   font-size: 12px;
   color: var(--color-primary);
   background: var(--color-card-bg-hover);
   outline: none;
+  box-sizing: border-box;
+  padding-right: 34px;
 }
 
 .dashboard__search::placeholder {
   color: var(--color-text-light);
+}
+
+.dashboard__clearBtn {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  border: none;
+  background: transparent;
+  color: var(--color-text-light);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 4px;
+}
+
+.dashboard__clearBtn:hover {
+  color: var(--color-primary);
 }
 
 .dashboard__btn {
@@ -180,7 +203,7 @@
 .tickets {
   width: 100%;
   border-collapse: collapse;
-  table-layout: fixed; /* critical for consistent columns across months */
+  table-layout: fixed;
 }
 
 .tickets__headCell {
@@ -207,18 +230,15 @@
   vertical-align: top;
 }
 
-/* KEY column: shrink-to-fit + no wrap */
 .tickets__cell--key {
   width: 1%;
   white-space: nowrap;
 }
 
-/* SUMMARY column: take remaining space (do NOT set % widths here) */
 .tickets__cell--summary {
   width: auto;
 }
 
-/* Make ellipsis actually work: it needs a block with max-width */
 .tickets__summaryText {
   display: block;
   max-width: 100%;
@@ -252,6 +272,7 @@
   align-items: center;
   justify-content: center;
   padding: 16px;
+  z-index: 20;
 }
 
 .modal__panel {
@@ -270,25 +291,43 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-
   position: sticky;
-  top: 0;
-  background: var(--color-card-bg-hover);
-  padding-bottom: 10px;
+  top: -14px;
+  margin: -14px -14px 14px;
+  padding: 14px 14px 10px;
   border-bottom: 1px solid var(--border-color);
+  isolation: isolate;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.02);
   z-index: 2;
+}
+
+.modal__top::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--color-card-bg-hover);
+  z-index: -1;
+}
+
+.modal__hero {
+  min-width: 0;
+  position: relative;
+  z-index: 1;
+}
+
+.modal__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+  z-index: 1;
 }
 
 .modal__heading {
   font-size: 16px;
   font-weight: 600;
   color: var(--color-primary);
-}
-
-.modal__sub {
-  color: var(--color-text-light);
-  font-size: 12px;
-  margin-top: 6px;
+  margin: 0;
 }
 
 .modal__closeBtn {
@@ -308,21 +347,53 @@
   background: var(--color-card-bg-hover);
 }
 
+.modal__jiraBtn {
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  background: var(--color-card-bg);
+  border-radius: var(--border-radius);
+  color: #2f5878;
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.modal__jiraBtn:hover {
+  background: var(--color-card-bg-hover);
+}
+
 .modal__closeBtn:active {
   transform: translateY(1px);
 }
 
-.modal__grid {
-  margin-top: 14px;
-  display: grid;
-  grid-template-columns: 1fr 320px;
+.modal__main {
+  display: flex;
+  flex-direction: column;
   gap: 14px;
+  margin-top: 14px;
+}
+
+.modal__sectionCard {
+  background: var(--color-card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius);
+  padding: 12px;
+  backdrop-filter: blur(6px);
+}
+
+.modal__sectionHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
 }
 
 .modal__sectionTitle {
   font-size: 16px;
   font-weight: 600;
-  margin: 0 0 8px 0;
+  margin: 0;
   color: var(--color-primary);
 }
 
@@ -338,6 +409,23 @@
   color: var(--color-primary);
 }
 
+.modal__textLink {
+  color: #2f5878;
+  text-decoration: underline;
+}
+
+.modal__contentFlow {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.modal__commentList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .modal__comment {
   border: 1px solid var(--border-color);
   border-radius: var(--border-radius);
@@ -351,22 +439,40 @@
   margin-bottom: 6px;
 }
 
-.modal__attachment {
+.modal__attachmentInline {
   border: 1px solid var(--border-color);
   border-radius: var(--border-radius);
-  background: var(--color-card-bg);
+  background: var(--color-card-bg-hover);
   padding: 10px;
 }
 
-.modal__attachmentName {
-  font-weight: 600;
-  color: var(--color-primary);
+.modal__fileIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 52px;
+  height: 52px;
+  margin-right: 10px;
+  border: 1px solid #9db8d0;
+  border-radius: var(--border-radius);
+  background: linear-gradient(135deg, #eef6ff, #cfe3f7);
+  color: #2f5878;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45);
 }
 
-.modal__attachmentMeta {
-  font-size: 12px;
-  color: var(--color-text-light);
-  margin-top: 2px;
+.modal__fileIcon--pdf {
+  border-color: #7fa6c9;
+  background: linear-gradient(135deg, #f7fbff, #b9d5ef);
+  color: #234f75;
+}
+
+.modal__fileIcon--outlook {
+  border-color: #6e9aca;
+  background: linear-gradient(135deg, #edf5ff, #a9c8ee);
+  color: #1f4f7f;
 }
 
 .modal__img {
@@ -382,7 +488,7 @@
 .modal__link {
   display: inline-block;
   margin-top: 10px;
-  color: var(--color-primary);
+  color: #2f5878;
   font-size: 12px;
   text-decoration: none;
 }
@@ -391,8 +497,26 @@
   text-decoration: underline;
 }
 
-@media (max-width: 900px) {
-  .modal__grid {
-    grid-template-columns: 1fr;
+@media (max-width: 640px) {
+  .modal {
+    padding: 8px;
+  }
+
+  .modal__panel {
+    max-height: calc(100vh - 16px);
+  }
+
+  .modal__top {
+    align-items: stretch;
+    margin: -14px -14px 14px;
+    padding: 14px 14px 10px;
+  }
+
+  .modal__actions {
+    justify-content: space-between;
+  }
+
+  .modal__heading {
+    font-size: 16px;
   }
 }

@@ -6,36 +6,79 @@ function mustGetEnv(name: string): string {
   return v;
 }
 
-/**
- * Jira description/comment bodies are often ADF (Atlassian Document Format).
- * This converts ADF to readable plain text, and adds placeholders for attachments/images.
- */
-function adfToPlainText(node: any): string {
+function escapePlaceholderValue(value: string) {
+  return value.replace(/[|[\]]/g, " ").trim();
+}
+
+function placeholderFromAttachmentRef(attachment?: {
+  id?: string | number;
+  filename?: string;
+}) {
+  const id = attachment?.id ? escapePlaceholderValue(String(attachment.id)) : "";
+  const name = attachment?.filename
+    ? escapePlaceholderValue(String(attachment.filename))
+    : "";
+
+  if (id && name) return `[ATTACHMENT_REF:${id}|${name}]`;
+  if (id) return `[ATTACHMENT_REF:${id}]`;
+  if (name) return `[ATTACHMENT_REF:|${name}]`;
+  return "[Attachment]";
+}
+
+function mediaPlaceholder(
+  attrs: any,
+  resolveAttachment?: (attrs: any) => { id?: string | number; filename?: string } | null,
+): string {
+  const resolved = resolveAttachment?.(attrs);
+  if (resolved) return placeholderFromAttachmentRef(resolved);
+
+  const id = attrs?.id ? escapePlaceholderValue(String(attrs.id)) : "";
+  const nameCandidates = [
+    attrs?.alt,
+    attrs?.text,
+    attrs?.title,
+    attrs?.fileName,
+    attrs?.filename,
+    attrs?.name,
+  ];
+  const name = nameCandidates
+    .map((v) => (typeof v === "string" ? escapePlaceholderValue(v) : ""))
+    .find(Boolean);
+
+  if (id && name) return `[ATTACHMENT_REF:${id}|${name}]`;
+  if (id) return `[ATTACHMENT_REF:${id}]`;
+  if (name) return `[ATTACHMENT_REF:|${name}]`;
+  return "[ATTACHMENT]";
+}
+
+function adfToPlainText(
+  node: any,
+  resolveAttachment?: (attrs: any) => { id?: string | number; filename?: string } | null,
+): string {
   if (!node) return "";
   if (typeof node === "string") return node;
-  if (Array.isArray(node)) return node.map(adfToPlainText).join("");
+  if (Array.isArray(node)) {
+    return node.map((child) => adfToPlainText(child, resolveAttachment)).join("");
+  }
 
-  // Text node (also handle link marks on text)
   if (node.type === "text") {
     const text = node.text ?? "";
     const marks = node.marks ?? [];
     const linkMark = marks.find((m: any) => m?.type === "link");
     const href = linkMark?.attrs?.href;
 
-    // If the text is the URL itself, keep it simple
     if (href) {
-      if (text && text.trim() && text.trim() !== href)
+      if (text && text.trim() && text.trim() !== href) {
         return `${text} (${href})`;
+      }
       return href;
     }
 
     return text;
   }
 
-  // Line break
   if (node.type === "hardBreak") return "\n";
 
-  // Smart links (Jira "embed via link")
   if (
     node.type === "inlineCard" ||
     node.type === "blockCard" ||
@@ -45,22 +88,21 @@ function adfToPlainText(node: any): string {
     return url ? `[Link: ${url}]\n` : "[Link]\n";
   }
 
-  // Media nodes (images/files embedded in description/comments)
-  if (node.type === "media") {
-    const attrs = node.attrs ?? {};
-    const id = attrs.id ?? "";
-    return id ? `[ATTACHMENT_ID:${id}]` : "[ATTACHMENT]";
+  if (node.type === "media" || node.type === "mediaInline") {
+    return mediaPlaceholder(node.attrs ?? {}, resolveAttachment);
   }
 
   if (node.type === "mediaSingle" || node.type === "mediaGroup") {
-    const content = node.content ? adfToPlainText(node.content) : "";
-    return content ? content + "\n" : "[ATTACHMENT]\n";
+    const content = node.content
+      ? adfToPlainText(node.content, resolveAttachment)
+      : "";
+    return content ? `${content}\n` : "[ATTACHMENT]\n";
   }
 
-  // Recurse through children
-  const content = node.content ? adfToPlainText(node.content) : "";
+  const content = node.content
+    ? adfToPlainText(node.content, resolveAttachment)
+    : "";
 
-  // Add line breaks after block-ish nodes for readability
   const blockTypes = new Set([
     "doc",
     "paragraph",
@@ -77,9 +119,59 @@ function adfToPlainText(node: any): string {
     "tableCell",
   ]);
 
-  if (blockTypes.has(node.type)) return content + "\n";
+  if (blockTypes.has(node.type)) return `${content}\n`;
 
   return content;
+}
+
+function toMs(value: string | null | undefined) {
+  if (!value) return Number.NaN;
+  return new Date(value).getTime();
+}
+
+function createSequentialMediaResolver(
+  attachments: Array<{
+    id: string | number;
+    filename: string;
+    createdMs: number;
+    authorAccountId: string | null;
+  }>,
+  usedAttachmentIds: Set<string>,
+  options: {
+    authorAccountId?: string | null;
+    createdMs?: number;
+  } = {},
+) {
+  const candidates = attachments
+    .filter((attachment) => {
+      if (usedAttachmentIds.has(String(attachment.id))) return false;
+      if (
+        options.authorAccountId &&
+        attachment.authorAccountId &&
+        attachment.authorAccountId !== options.authorAccountId
+      ) {
+        return false;
+      }
+      if (
+        Number.isFinite(options.createdMs) &&
+        Number.isFinite(attachment.createdMs) &&
+        attachment.createdMs > Number(options.createdMs) + 1000
+      ) {
+        return false;
+      }
+      return true;
+    })
+    .sort((a, b) => a.createdMs - b.createdMs);
+
+  let index = 0;
+
+  return () => {
+    const next = candidates[index];
+    if (!next) return null;
+    index += 1;
+    usedAttachmentIds.add(String(next.id));
+    return next;
+  };
 }
 
 export async function GET(
@@ -134,54 +226,67 @@ export async function GET(
     const data = await r.json();
     const f = data.fields ?? {};
 
-    // Attachments list + lookup by id
-    const attachmentsRaw = f.attachment ?? [];
-    const attachmentById = new Map<string, any>();
-    for (const a of attachmentsRaw) {
-      if (a?.id) attachmentById.set(String(a.id), a);
-    }
-
-    function placeholderLabelForAttachment(a: any): string {
-      const mime = String(a?.mimeType ?? "").toLowerCase();
-      const isImage = mime.startsWith("image/");
-      const filename = a?.filename ?? "file";
-      return isImage ? `[Image: ${filename}]` : `[File: ${filename}]`;
-    }
-
-    // Replace [ATTACHMENT_ID:123] placeholders with readable filename labels
-    function enrichPlaceholders(text: string): string {
-      if (!text) return "";
-      return text
-        .replace(/\[ATTACHMENT_ID:([^\]]+)\]/g, (_m, id) => {
-          const a = attachmentById.get(String(id));
-          if (!a) return "[Attachment]";
-          return placeholderLabelForAttachment(a);
-        })
-        .replace(/\[ATTACHMENT\]/g, "[Attachment]");
-    }
-
-    const descriptionText = enrichPlaceholders(
-      adfToPlainText(f.description).trim(),
-    );
-
-    const comments = (f.comment?.comments ?? []).map((c: any) => {
-      const raw = adfToPlainText(c.body).trim();
-      const bodyText = enrichPlaceholders(raw);
-
-      return {
-        id: c.id,
-        author: c.author?.displayName ?? "Unknown",
-        created: c.created ?? null,
-        bodyText,
-      };
-    });
-
-    const attachments = attachmentsRaw.map((a: any) => ({
+    const attachmentsRaw: Array<{
+      id: string;
+      filename: string;
+      mimeType: string | null;
+      size: number | null;
+      contentUrl: string;
+      createdMs: number;
+      authorAccountId: string | null;
+    }> = (f.attachment ?? []).map((a: any) => ({
       id: a.id,
       filename: a.filename,
       mimeType: a.mimeType ?? null,
       size: a.size ?? null,
       contentUrl: a.content,
+      createdMs: toMs(a.created),
+      authorAccountId: a.author?.accountId ?? null,
+    }));
+
+    const usedAttachmentIds = new Set<string>();
+
+    function enrichPlaceholders(text: string): string {
+      if (!text) return "";
+      return text.replace(/\[ATTACHMENT\]/g, "[Attachment]");
+    }
+
+    const descriptionResolver = createSequentialMediaResolver(
+      attachmentsRaw,
+      usedAttachmentIds,
+      { createdMs: toMs(f.created) },
+    );
+
+    const descriptionText = enrichPlaceholders(
+      adfToPlainText(f.description, descriptionResolver).trim(),
+    );
+
+    const comments = (f.comment?.comments ?? []).map((c: any) => {
+      const commentResolver = createSequentialMediaResolver(
+        attachmentsRaw,
+        usedAttachmentIds,
+        {
+          authorAccountId: c.author?.accountId ?? null,
+          createdMs: toMs(c.created),
+        },
+      );
+
+      return {
+        id: c.id,
+        author: c.author?.displayName ?? "Unknown",
+        created: c.created ?? null,
+        bodyText: enrichPlaceholders(
+          adfToPlainText(c.body, commentResolver).trim(),
+        ),
+      };
+    });
+
+    const attachments = attachmentsRaw.map((a) => ({
+      id: a.id,
+      filename: a.filename,
+      mimeType: a.mimeType,
+      size: a.size,
+      contentUrl: a.contentUrl,
     }));
 
     return NextResponse.json({

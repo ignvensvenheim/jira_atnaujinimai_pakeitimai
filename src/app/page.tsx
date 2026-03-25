@@ -22,6 +22,14 @@ type ApiResponse = {
   groups: Group[];
 };
 
+type Attachment = {
+  id: string;
+  filename: string;
+  mimeType: string | null;
+  size: number | null;
+  contentUrl: string;
+};
+
 type IssueDetails = {
   key: string;
   url: string;
@@ -31,7 +39,6 @@ type IssueDetails = {
   priority: string | null;
   issueType: string | null;
   created: string | null;
-
   fixVersions: string[];
   descriptionText: string;
   comments: Array<{
@@ -40,13 +47,7 @@ type IssueDetails = {
     created: string | null;
     bodyText: string;
   }>;
-  attachments: Array<{
-    id: string;
-    filename: string;
-    mimeType: string | null;
-    size: number | null;
-    contentUrl: string;
-  }>;
+  attachments: Attachment[];
 };
 
 function normalize(s: string) {
@@ -58,6 +59,188 @@ function formatDate(iso: string | null) {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
   return d.toLocaleString();
+}
+
+function attachmentProxyUrl(attachment: Attachment) {
+  return `/api/attachment?contentUrl=${encodeURIComponent(attachment.contentUrl)}&filename=${encodeURIComponent(attachment.filename)}`;
+}
+
+function renderLinkedText(text: string) {
+  const urlRegex = /(https?:\/\/[^\s)]+)(?=[)\]}]?(?:\s|$))/g;
+  const parts = text.split(urlRegex);
+
+  return parts.map((part, index) => {
+    if (!part) return null;
+    if (/^https?:\/\/[^\s)]+$/.test(part)) {
+      return (
+        <a
+          key={`link-${index}`}
+          className={styles.modal__textLink}
+          href={part}
+          target="_blank"
+          rel="noreferrer"
+        >
+          {part}
+        </a>
+      );
+    }
+
+    return <span key={`text-${index}`}>{part}</span>;
+  });
+}
+
+function normalizeFilename(name: string) {
+  return name.trim().toLowerCase();
+}
+
+function isDwgLikeFile(filename: string) {
+  const lower = normalizeFilename(filename);
+  return lower.endsWith(".dwg") || lower.endsWith(".fxf");
+}
+
+function isPdfFile(filename: string) {
+  return normalizeFilename(filename).endsWith(".pdf");
+}
+
+function isOutlookFile(filename: string, mimeType: string | null) {
+  const lower = normalizeFilename(filename);
+  const mime = (mimeType ?? "").toLowerCase();
+  return lower.endsWith(".msg") || mime.includes("vnd.ms-outlook");
+}
+
+function findAttachment(
+  attachments: Attachment[],
+  refId?: string,
+  refName?: string,
+) {
+  if (refId) {
+    const byId = attachments.find((a) => String(a.id) === refId);
+    if (byId) return byId;
+  }
+
+  if (refName) {
+    const normalizedRef = normalizeFilename(refName);
+    const byName = attachments.find(
+      (a) => normalizeFilename(a.filename) === normalizedRef,
+    );
+    if (byName) return byName;
+
+    const byPartialName = attachments.find((a) =>
+      normalizeFilename(a.filename).includes(normalizedRef),
+    );
+    if (byPartialName) return byPartialName;
+  }
+
+  return null;
+}
+
+function renderTextWithAttachments(
+  text: string,
+  attachments: Attachment[],
+  emptyFallback = "—",
+) {
+  const content = text.trim();
+  if (!content) {
+    return <div className={styles.modal__pre}>{emptyFallback}</div>;
+  }
+
+  const parts = content
+    .split(/(\[ATTACHMENT_REF:[^\]]+\]|\[ATTACHMENT_ID:[^\]]+\])/g)
+    .filter(Boolean);
+
+  return (
+    <div className={styles.modal__contentFlow}>
+      {parts.map((part, index) => {
+        const refMatch = /^\[ATTACHMENT_REF:([^|\]]*)(?:\|([^\]]*))?\]$/.exec(
+          part,
+        );
+        const legacyIdMatch = /^\[ATTACHMENT_ID:([^\]]+)\]$/.exec(part);
+
+        const refId = refMatch?.[1]?.trim() || legacyIdMatch?.[1]?.trim() || "";
+        const refName = refMatch?.[2]?.trim() || "";
+
+        if (!refMatch && !legacyIdMatch) {
+          if (!part.trim()) return null;
+          return (
+            <div key={`text-${index}`} className={styles.modal__pre}>
+              {renderLinkedText(part)}
+            </div>
+          );
+        }
+
+        const attachment = findAttachment(attachments, refId, refName);
+        if (!attachment) {
+          return (
+            <div key={`missing-${index}`} className={styles.modal__pre}>
+              {refName ? `[Attachment: ${refName}]` : "[Attachment]"}
+            </div>
+          );
+        }
+
+        const proxyUrl = attachmentProxyUrl(attachment);
+        const isImage = (attachment.mimeType ?? "")
+          .toLowerCase()
+          .startsWith("image/");
+        const isDwgLike = isDwgLikeFile(attachment.filename);
+        const isPdf = isPdfFile(attachment.filename);
+        const isOutlook = isOutlookFile(
+          attachment.filename,
+          attachment.mimeType,
+        );
+        const showImagePreview =
+          isImage && !isDwgLike && !isPdf && !isOutlook;
+
+        return (
+          <div
+            key={`attachment-${attachment.id}-${index}`}
+            className={styles.modal__attachmentInline}
+          >
+            {isDwgLike && (
+              <div className={styles.modal__fileIcon} aria-hidden="true">
+                DWG
+              </div>
+            )}
+
+            {isPdf && (
+              <div
+                className={`${styles.modal__fileIcon} ${styles["modal__fileIcon--pdf"]}`}
+                aria-hidden="true"
+              >
+                PDF
+              </div>
+            )}
+
+            {isOutlook && (
+              <div
+                className={`${styles.modal__fileIcon} ${styles["modal__fileIcon--outlook"]}`}
+                aria-hidden="true"
+              >
+                MAIL
+              </div>
+            )}
+
+            {showImagePreview && (
+              <img
+                className={styles.modal__img}
+                src={proxyUrl}
+                alt={attachment.filename}
+                loading="lazy"
+              />
+            )}
+
+            <a
+              className={styles.modal__link}
+              href={proxyUrl}
+              target="_blank"
+              rel="noreferrer"
+            >
+              {showImagePreview ? "Open image ↗" : "Open attachment ↗"}
+            </a>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 async function apiJson<T>(
@@ -93,7 +276,6 @@ export default function Page() {
   const [detailsError, setDetailsError] = useState<string | null>(null);
   const [detailsLoading, setDetailsLoading] = useState(false);
 
-  // Initial load: groups
   useEffect(() => {
     let alive = true;
 
@@ -114,7 +296,6 @@ export default function Page() {
 
       setData(result.data);
 
-      // Open all months by default
       const initial: Record<string, boolean> = {};
       for (const g of result.data.groups ?? []) initial[g.fixVersion] = true;
       setOpenMonths(initial);
@@ -145,6 +326,15 @@ export default function Page() {
   const shownTicketsCount = useMemo(() => {
     return filteredGroups.reduce((acc, g) => acc + g.issues.length, 0);
   }, [filteredGroups]);
+
+  const timelineComments = useMemo(() => {
+    if (!details) return [];
+    return [...details.comments].sort((a, b) => {
+      const aTime = a.created ? new Date(a.created).getTime() : 0;
+      const bTime = b.created ? new Date(b.created).getTime() : 0;
+      return aTime - bTime;
+    });
+  }, [details]);
 
   const toggleMonth = useCallback((name: string) => {
     setOpenMonths((prev) => ({ ...prev, [name]: !prev[name] }));
@@ -194,7 +384,6 @@ export default function Page() {
     setDetailsLoading(false);
   }, []);
 
-  // ESC closes modal
   useEffect(() => {
     if (!selectedKey) return;
 
@@ -212,15 +401,10 @@ export default function Page() {
         <div className={styles.header__content}>
           <div className={styles.header__left}>
             <Image src={logo} alt="Logo" width={114} height={59} priority />
-            {/* If you want meta under logo later, you already have header__meta in CSS */}
           </div>
 
           <div className={styles.header__right}>
-            {/* This is a title; keep it as a heading for semantics */}
-            <h1 className={styles.header__title}>
-              IMOS mėnesiniai atnaujinimai
-            </h1>
-            {/* Optional meta line */}
+            <h1 className={styles.header__title}>IMOS mėnesiniai atnaujinimai</h1>
             {data && (
               <div className={styles.header__meta}>
                 Months: <b>{data.groups.length}</b> • Tickets:{" "}
@@ -237,12 +421,26 @@ export default function Page() {
             className={`${styles.dashboard__card} ${styles.dashboard__controls}`}
           >
             <div className={styles.dashboard__controlsRow}>
-              <input
-                className={styles.dashboard__search}
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search (key, summary, month…)"
-              />
+              <div className={styles.dashboard__searchWrap}>
+                <input
+                  className={styles.dashboard__search}
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search (key, summary, month...)"
+                />
+
+                {query && (
+                  <button
+                    type="button"
+                    className={styles.dashboard__clearBtn}
+                    onClick={() => setQuery("")}
+                    aria-label="Clear search"
+                    title="Clear search"
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
 
               <button className={styles.dashboard__btn} onClick={openAll}>
                 Open all
@@ -259,7 +457,7 @@ export default function Page() {
             </div>
           </div>
 
-          {loading && <div className={styles.dashboard__status}>Loading…</div>}
+          {loading && <div className={styles.dashboard__status}>Loading...</div>}
 
           {error && (
             <div className={styles.dashboard__error}>
@@ -286,7 +484,6 @@ export default function Page() {
                   {isOpen && (
                     <div className={styles.month__body}>
                       <table className={styles.tickets}>
-                        {/* Colgroup makes column widths consistent across every month */}
                         <colgroup>
                           <col style={{ width: "11%" }} />
                           <col />
@@ -354,7 +551,6 @@ export default function Page() {
           </div>
         </div>
 
-        {/* Modal */}
         {selectedKey && (
           <div className={styles.modal} onClick={closeModal}>
             <div
@@ -364,33 +560,38 @@ export default function Page() {
               aria-modal="true"
             >
               <div className={styles.modal__top}>
-                <div>
+                <div className={styles.modal__hero}>
                   <div className={styles.modal__heading}>
                     {details?.key ?? selectedKey} — {details?.summary ?? ""}
                   </div>
-                  <div className={styles.modal__sub}>
-                    Status: <b>{details?.status ?? "—"}</b> • Assignee:{" "}
-                    <b>{details?.assignee ?? "—"}</b> • Priority:{" "}
-                    <b>{details?.priority ?? "—"}</b>
-                    <div>
-                      Created: <b>{formatDate(details?.created ?? null)}</b>
-                    </div>
-                  </div>
                 </div>
 
-                <button
-                  className={styles.modal__closeBtn}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    closeModal();
-                  }}
-                >
-                  Close
-                </button>
+                <div className={styles.modal__actions}>
+                  {details?.url && (
+                    <a
+                      className={styles.modal__jiraBtn}
+                      href={details.url}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      View in Jira ↗
+                    </a>
+                  )}
+
+                  <button
+                    className={styles.modal__closeBtn}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      closeModal();
+                    }}
+                  >
+                    Close
+                  </button>
+                </div>
               </div>
 
               {detailsLoading && (
-                <div className={styles.dashboard__status}>Loading details…</div>
+                <div className={styles.dashboard__status}>Loading details...</div>
               )}
 
               {detailsError && (
@@ -400,115 +601,36 @@ export default function Page() {
               )}
 
               {details && (
-                <div className={styles.modal__grid}>
-                  {/* Left */}
-                  <div>
-                    <h3 className={styles.modal__sectionTitle}>Description</h3>
-                    <pre className={styles.modal__pre}>
-                      {details.descriptionText || "—"}
-                    </pre>
-
-                    <h3 className={styles.modal__sectionTitle}>
-                      Comments ({details.comments.length})
-                    </h3>
-
-                    {details.comments.length === 0 ? (
-                      <div className={styles.dashboard__status}>
-                        No comments.
+                <div className={styles.modal__main}>
+                  <section className={styles.modal__sectionCard}>
+                    <div className={styles.modal__commentList}>
+                      <div className={styles.modal__comment}>
+                        <div className={styles.modal__commentMeta}>
+                          <b>{details.key}</b> • {formatDate(details.created)}
+                        </div>
+                        {renderTextWithAttachments(
+                          details.descriptionText,
+                          details.attachments,
+                        )}
                       </div>
-                    ) : (
-                      <div
-                        style={{
-                          display: "flex",
-                          flexDirection: "column",
-                          gap: 10,
-                        }}
-                      >
-                        {details.comments.map((c) => (
+
+                      {timelineComments.length === 0 ? (
+                        <div className={styles.dashboard__status}>No comments.</div>
+                      ) : (
+                        timelineComments.map((c) => (
                           <div key={c.id} className={styles.modal__comment}>
                             <div className={styles.modal__commentMeta}>
                               <b>{c.author}</b> • {formatDate(c.created)}
                             </div>
-                            <pre className={styles.modal__pre}>
-                              {c.bodyText || "—"}
-                            </pre>
+                            {renderTextWithAttachments(
+                              c.bodyText,
+                              details.attachments,
+                            )}
                           </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Right */}
-                  <div>
-                    <h3 className={styles.modal__sectionTitle}>
-                      Attachments ({details.attachments.length})
-                    </h3>
-
-                    {details.attachments.length === 0 ? (
-                      <div className={styles.dashboard__status}>
-                        No attachments.
-                      </div>
-                    ) : (
-                      <div
-                        style={{
-                          display: "flex",
-                          flexDirection: "column",
-                          gap: 8,
-                        }}
-                      >
-                        {details.attachments.map((a) => {
-                          const proxyUrl = `/api/attachment?contentUrl=${encodeURIComponent(a.contentUrl)}&filename=${encodeURIComponent(a.filename)}`;
-                          const isImage = (a.mimeType ?? "")
-                            .toLowerCase()
-                            .startsWith("image/");
-
-                          return (
-                            <div
-                              key={a.id}
-                              className={styles.modal__attachment}
-                            >
-                              <div className={styles.modal__attachmentName}>
-                                {a.filename}
-                              </div>
-                              <div className={styles.modal__attachmentMeta}>
-                                {a.mimeType ?? "file"}
-                                {typeof a.size === "number"
-                                  ? ` • ${Math.round(a.size / 1024)} KB`
-                                  : ""}
-                              </div>
-
-                              {isImage && (
-                                <img
-                                  className={styles.modal__img}
-                                  src={proxyUrl}
-                                  alt={a.filename}
-                                  loading="lazy"
-                                />
-                              )}
-
-                              <a
-                                className={styles.modal__link}
-                                href={proxyUrl}
-                                target="_blank"
-                                rel="noreferrer"
-                              >
-                                Open / download ↗
-                              </a>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-
-                    <a
-                      className={styles.modal__link}
-                      href={details.url}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      Open in Jira ↗
-                    </a>
-                  </div>
+                        ))
+                      )}
+                    </div>
+                  </section>
                 </div>
               )}
             </div>
