@@ -66,8 +66,9 @@ function attachmentProxyUrl(attachment: Attachment) {
 }
 
 function renderLinkedText(text: string) {
+  const normalizedText = text.replace(/\[Link:\s*(https?:\/\/[^\]\s]+)\]/g, "$1");
   const urlRegex = /(https?:\/\/[^\s)]+)(?=[)\]}]?(?:\s|$))/g;
-  const parts = text.split(urlRegex);
+  const parts = normalizedText.split(urlRegex);
 
   return parts.map((part, index) => {
     if (!part) return null;
@@ -134,6 +135,37 @@ function findAttachment(
   return null;
 }
 
+function AttachmentPreviewImage({
+  src,
+  alt,
+}: {
+  src: string;
+  alt: string;
+}) {
+  const [isLoading, setIsLoading] = useState(true);
+
+  return (
+    <div
+      className={`${styles.modal__imgFrame} ${isLoading ? styles["modal__imgFrame--loading"] : ""}`}
+    >
+      {isLoading && (
+        <div className={styles.modal__imgLoader} aria-hidden="true">
+          <span className={styles.modal__imgSpinner} />
+        </div>
+      )}
+
+      <img
+        className={styles.modal__img}
+        src={src}
+        alt={alt}
+        loading="lazy"
+        onLoad={() => setIsLoading(false)}
+        onError={() => setIsLoading(false)}
+      />
+    </div>
+  );
+}
+
 function renderTextWithAttachments(
   text: string,
   attachments: Attachment[],
@@ -189,42 +221,29 @@ function renderTextWithAttachments(
         );
         const showImagePreview =
           isImage && !isDwgLike && !isPdf && !isOutlook;
+        const attachmentTypeLabel = isDwgLike
+          ? "DWG attachment"
+          : isPdf
+            ? "PDF attachment"
+            : isOutlook
+              ? "Mail attachment"
+              : null;
 
         return (
           <div
             key={`attachment-${attachment.id}-${index}`}
             className={styles.modal__attachmentInline}
           >
-            {isDwgLike && (
-              <div className={styles.modal__fileIcon} aria-hidden="true">
-                DWG
-              </div>
-            )}
-
-            {isPdf && (
-              <div
-                className={`${styles.modal__fileIcon} ${styles["modal__fileIcon--pdf"]}`}
-                aria-hidden="true"
-              >
-                PDF
-              </div>
-            )}
-
-            {isOutlook && (
-              <div
-                className={`${styles.modal__fileIcon} ${styles["modal__fileIcon--outlook"]}`}
-                aria-hidden="true"
-              >
-                MAIL
+            {attachmentTypeLabel && (
+              <div className={styles.modal__attachmentLabel}>
+                {attachmentTypeLabel}
               </div>
             )}
 
             {showImagePreview && (
-              <img
-                className={styles.modal__img}
+              <AttachmentPreviewImage
                 src={proxyUrl}
                 alt={attachment.filename}
-                loading="lazy"
               />
             )}
 
