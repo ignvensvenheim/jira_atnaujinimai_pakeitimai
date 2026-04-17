@@ -129,9 +129,21 @@ function toMs(value: string | null | undefined) {
   return new Date(value).getTime();
 }
 
+function normalizeFilename(value: string | null | undefined) {
+  return (value ?? "").trim().toLowerCase();
+}
+
+function isTrueLike(value: unknown) {
+  return value === true || value === "true";
+}
+
+function isFalseLike(value: unknown) {
+  return value === false || value === "false";
+}
+
 function isPublicComment(comment: any) {
-  if (comment?.jsdPublic === false) return false;
-  if (comment?.internal === true) return false;
+  if (isFalseLike(comment?.jsdPublic)) return false;
+  if (isTrueLike(comment?.internal)) return false;
 
   const properties = Array.isArray(comment?.properties) ? comment.properties : [];
 
@@ -139,16 +151,64 @@ function isPublicComment(comment: any) {
     const key = String(property?.key ?? "");
     const value = property?.value;
 
-    if (key === "sd.public.comment" && value?.internal === true) {
+    if (
+      (key === "sd.public.comment" || key === "sd.comment.public") &&
+      isTrueLike(value?.internal)
+    ) {
       return false;
     }
 
-    if (key === "sd.allow.public.comment" && value?.allow === false) {
+    if (key === "sd.allow.public.comment" && isFalseLike(value?.allow)) {
       return false;
     }
   }
 
   return true;
+}
+
+async function fetchAllComments(
+  baseUrl: string,
+  issueKey: string,
+  auth: string,
+) {
+  const comments: any[] = [];
+  let startAt = 0;
+  const maxResults = 100;
+
+  while (true) {
+    const commentsUrl = new URL(
+      `${baseUrl}/rest/api/3/issue/${encodeURIComponent(issueKey)}/comment`,
+    );
+    commentsUrl.searchParams.set("expand", "properties");
+    commentsUrl.searchParams.set("startAt", String(startAt));
+    commentsUrl.searchParams.set("maxResults", String(maxResults));
+
+    const response = await fetch(commentsUrl.toString(), {
+      headers: {
+        Authorization: `Basic ${auth}`,
+        Accept: "application/json",
+      },
+      cache: "no-store",
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Failed to load comments (${response.status}): ${text}`);
+    }
+
+    const page = await response.json();
+    const values = Array.isArray(page?.comments) ? page.comments : [];
+    comments.push(...values);
+
+    const total = Number(page?.total ?? comments.length);
+    const pageSize = Number(page?.maxResults ?? values.length);
+    const nextStart = Number(page?.startAt ?? startAt) + pageSize;
+
+    if (!values.length || nextStart >= total) break;
+    startAt = nextStart;
+  }
+
+  return comments;
 }
 
 function createSequentialMediaResolver(
@@ -185,14 +245,50 @@ function createSequentialMediaResolver(
     })
     .sort((a, b) => a.createdMs - b.createdMs);
 
+  function claimAttachment(attachment?: (typeof candidates)[number] | null) {
+    if (!attachment) return null;
+    usedAttachmentIds.add(String(attachment.id));
+    return attachment;
+  }
+
   let index = 0;
 
-  return () => {
-    const next = candidates[index];
-    if (!next) return null;
-    index += 1;
-    usedAttachmentIds.add(String(next.id));
-    return next;
+  return (attrs?: any) => {
+    const filenameCandidates = [
+      attrs?.alt,
+      attrs?.fileName,
+      attrs?.filename,
+      attrs?.name,
+      attrs?.title,
+      attrs?.text,
+    ]
+      .map((value) => normalizeFilename(typeof value === "string" ? value : ""))
+      .filter(Boolean);
+
+    for (const filename of filenameCandidates) {
+      const exactMatch = candidates.find(
+        (attachment) =>
+          !usedAttachmentIds.has(String(attachment.id)) &&
+          normalizeFilename(attachment.filename) === filename,
+      );
+      if (exactMatch) return claimAttachment(exactMatch);
+
+      const partialMatch = candidates.find(
+        (attachment) =>
+          !usedAttachmentIds.has(String(attachment.id)) &&
+          normalizeFilename(attachment.filename).includes(filename),
+      );
+      if (partialMatch) return claimAttachment(partialMatch);
+    }
+
+    while (index < candidates.length) {
+      const next = candidates[index];
+      index += 1;
+      if (usedAttachmentIds.has(String(next.id))) continue;
+      return claimAttachment(next);
+    }
+
+    return null;
   };
 }
 
@@ -230,13 +326,16 @@ export async function GET(
     );
     url.searchParams.set("expand", "properties");
 
-    const r = await fetch(url.toString(), {
-      headers: {
-        Authorization: `Basic ${auth}`,
-        Accept: "application/json",
-      },
-      cache: "no-store",
-    });
+    const [r, commentEntries] = await Promise.all([
+      fetch(url.toString(), {
+        headers: {
+          Authorization: `Basic ${auth}`,
+          Accept: "application/json",
+        },
+        cache: "no-store",
+      }),
+      fetchAllComments(baseUrl, issueKey, auth),
+    ]);
 
     if (!r.ok) {
       const text = await r.text();
@@ -284,8 +383,7 @@ export async function GET(
       adfToPlainText(f.description, descriptionResolver).trim(),
     );
 
-    const comments = (f.comment?.comments ?? [])
-      .filter((c: any) => isPublicComment(c))
+    const comments = commentEntries
       .map((c: any) => {
         const commentResolver = createSequentialMediaResolver(
           attachmentsRaw,
@@ -297,6 +395,7 @@ export async function GET(
         );
 
         return {
+          isPublic: isPublicComment(c),
           id: c.id,
           author: c.author?.displayName ?? "Unknown",
           created: c.created ?? null,
@@ -304,7 +403,9 @@ export async function GET(
             adfToPlainText(c.body, commentResolver).trim(),
           ),
         };
-      });
+      })
+      .filter((c) => c.isPublic)
+      .map(({ isPublic: _isPublic, ...comment }) => comment);
 
     const attachments = attachmentsRaw.map((a) => ({
       id: a.id,

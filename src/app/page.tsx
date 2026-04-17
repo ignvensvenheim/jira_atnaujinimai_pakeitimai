@@ -106,7 +106,12 @@ function isPdfFile(filename: string) {
 function isOutlookFile(filename: string, mimeType: string | null) {
   const lower = normalizeFilename(filename);
   const mime = (mimeType ?? "").toLowerCase();
-  return lower.endsWith(".msg") || mime.includes("vnd.ms-outlook");
+  return (
+    lower.endsWith(".msg") ||
+    lower.endsWith(".eml") ||
+    mime.includes("vnd.ms-outlook") ||
+    mime.includes("message/rfc822")
+  );
 }
 
 function findAttachment(
