@@ -129,6 +129,28 @@ function toMs(value: string | null | undefined) {
   return new Date(value).getTime();
 }
 
+function isPublicComment(comment: any) {
+  if (comment?.jsdPublic === false) return false;
+  if (comment?.internal === true) return false;
+
+  const properties = Array.isArray(comment?.properties) ? comment.properties : [];
+
+  for (const property of properties) {
+    const key = String(property?.key ?? "");
+    const value = property?.value;
+
+    if (key === "sd.public.comment" && value?.internal === true) {
+      return false;
+    }
+
+    if (key === "sd.allow.public.comment" && value?.allow === false) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 function createSequentialMediaResolver(
   attachments: Array<{
     id: string | number;
@@ -206,6 +228,7 @@ export async function GET(
         "created",
       ].join(","),
     );
+    url.searchParams.set("expand", "properties");
 
     const r = await fetch(url.toString(), {
       headers: {
@@ -261,25 +284,27 @@ export async function GET(
       adfToPlainText(f.description, descriptionResolver).trim(),
     );
 
-    const comments = (f.comment?.comments ?? []).map((c: any) => {
-      const commentResolver = createSequentialMediaResolver(
-        attachmentsRaw,
-        usedAttachmentIds,
-        {
-          authorAccountId: c.author?.accountId ?? null,
-          createdMs: toMs(c.created),
-        },
-      );
+    const comments = (f.comment?.comments ?? [])
+      .filter((c: any) => isPublicComment(c))
+      .map((c: any) => {
+        const commentResolver = createSequentialMediaResolver(
+          attachmentsRaw,
+          usedAttachmentIds,
+          {
+            authorAccountId: c.author?.accountId ?? null,
+            createdMs: toMs(c.created),
+          },
+        );
 
-      return {
-        id: c.id,
-        author: c.author?.displayName ?? "Unknown",
-        created: c.created ?? null,
-        bodyText: enrichPlaceholders(
-          adfToPlainText(c.body, commentResolver).trim(),
-        ),
-      };
-    });
+        return {
+          id: c.id,
+          author: c.author?.displayName ?? "Unknown",
+          created: c.created ?? null,
+          bodyText: enrichPlaceholders(
+            adfToPlainText(c.body, commentResolver).trim(),
+          ),
+        };
+      });
 
     const attachments = attachmentsRaw.map((a) => ({
       id: a.id,
